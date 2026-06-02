@@ -4,11 +4,10 @@ const path = require('path');
 const fetch = (...args) => import('node-fetch').then(({ default: fetch }) => fetch(...args));
 require('dotenv').config({ override: true });
 
-for (const key of ['BOT_TOKEN', 'CLIENT_ID', 'GUILD_ID', 'PORT', 'MOCK_MODE']) {
+for (const key of ['BOT_TOKEN', 'CLIENT_ID', 'GUILD_ID', 'PORT']) {
   if (process.env[key]) process.env[key] = process.env[key].trim();
 }
 
-const MOCK_MODE = process.env.MOCK_MODE === 'true';
 const { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder, MessageFlags } = require('discord.js');
 const cheerio = require('cheerio');
 
@@ -23,15 +22,12 @@ const RSI_HEADERS = {
   'Accept': 'text/html,application/xhtml+xml'
 };
 
-if (!MOCK_MODE) {
-  const requiredEnv = ['BOT_TOKEN', 'CLIENT_ID', 'GUILD_ID'];
-  const missingEnv = requiredEnv.filter((key) => !process.env[key]);
-  if (missingEnv.length > 0) {
-    console.error(`❌ Missing required environment variables: ${missingEnv.join(', ')}`);
-    console.error('   Copy .env.example to .env and fill in your Discord credentials.');
-    console.error('   Or set MOCK_MODE=true to run locally without Discord.');
-    process.exit(1);
-  }
+const requiredEnv = ['BOT_TOKEN', 'CLIENT_ID', 'GUILD_ID'];
+const missingEnv = requiredEnv.filter((key) => !process.env[key]);
+if (missingEnv.length > 0) {
+  console.error(`❌ Missing required environment variables: ${missingEnv.join(', ')}`);
+  console.error('   Copy .env.example to .env and fill in your Discord credentials.');
+  process.exit(1);
 }
 
 function buildNotFoundResult(username, { httpStatus = null, errorType = 'not_in_registry' } = {}) {
@@ -428,11 +424,10 @@ async function lookupProfile(username) {
   });
 }
 
-const client = MOCK_MODE ? null : new Client({ intents: [GatewayIntentBits.Guilds] });
+const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 
 function getBotStatus() {
-  if (MOCK_MODE) return 'mock';
-  if (client?.isReady()) return 'online';
+  if (client.isReady()) return 'online';
   return 'starting';
 }
 
@@ -443,14 +438,13 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({
       status: 'ok',
-      mode: MOCK_MODE ? 'mock' : 'discord',
       bot: getBotStatus(),
       uptime: Math.floor(process.uptime())
     }));
     return;
   }
 
-  if (url.pathname === '/find') {
+  if (url.pathname === '/profiler') {
     const username = url.searchParams.get('username');
     if (!username) {
       res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -500,7 +494,7 @@ const server = http.createServer(async (req, res) => {
 <body>
   <h1>▸ SC_Profiler</h1>
   <p>Status: <span class="status">${botStatus}</span></p>
-  ${MOCK_MODE ? '<p>Mock mode — Discord disabled. RSI scraping active.</p>' : '<p>Discord bot online. Use <code>/find</code> in your server.</p>'}
+  <p>Discord bot online. Use <code>/profiler</code> in your server.</p>
   <p><a href="/simulator">/simulator</a> — Matrix UI preview</p>
   <p><a href="/health">/health</a></p>
 </body>
@@ -509,10 +503,6 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, () => {
   console.log(`🌐 Local server listening on http://localhost:${PORT}`);
-  if (MOCK_MODE) {
-    console.log('🧪 Mock mode enabled — Discord login skipped');
-    console.log(`   Simulator: http://localhost:${PORT}/simulator`);
-  }
 }).on('error', (err) => {
   if (err.code === 'EADDRINUSE') {
     console.error(`❌ Port ${PORT} is already in use. Stop the other process or set PORT to a different value in .env`);
@@ -521,104 +511,102 @@ server.listen(PORT, () => {
   throw err;
 });
 
-if (!MOCK_MODE) {
-  const commands = [
-    new SlashCommandBuilder()
-      .setName('find')
-      .setDescription('Look up an RSI citizen profile')
-      .addStringOption(option =>
-        option.setName('username')
-          .setDescription('RSI username')
-          .setRequired(true)
-      )
-  ].map(command => command.toJSON());
+const commands = [
+  new SlashCommandBuilder()
+    .setName('profiler')
+    .setDescription('Look up an RSI citizen profile')
+    .addStringOption(option =>
+      option.setName('username')
+        .setDescription('RSI username')
+        .setRequired(true)
+    )
+].map(command => command.toJSON());
 
-  const rest = new REST({ version: '10' }).setToken(process.env.BOT_TOKEN);
-  (async () => {
-    try {
-      console.log('🚀 Registering slash commands...');
-      await rest.put(
-        Routes.applicationGuildCommands(process.env.CLIENT_ID, process.env.GUILD_ID),
-        { body: commands }
-      );
-      console.log('✅ Slash commands registered!');
-    } catch (error) {
-      console.error('❌ Error registering commands:', error);
+const rest = new REST({ version: '10' }).setToken(process.env.BOT_TOKEN);
+(async () => {
+  try {
+    console.log('🚀 Registering slash commands...');
+    await rest.put(
+      Routes.applicationGuildCommands(process.env.CLIENT_ID, process.env.GUILD_ID),
+      { body: commands }
+    );
+    console.log('✅ Slash commands registered!');
+  } catch (error) {
+    console.error('❌ Error registering commands:', error);
+  }
+})();
+
+client.once('ready', () => {
+  console.log(`✅ Logged in as ${client.user.tag}`);
+  console.log(`   In Discord, use /profiler with "${client.user.username}"`);
+});
+
+client.on('interactionCreate', async interaction => {
+  if (!interaction.isChatInputCommand()) return;
+
+  console.log(`📩 /${interaction.commandName} from ${interaction.user.tag}`);
+
+  try {
+    if (interaction.commandName === 'profiler') {
+      await interaction.deferReply();
+
+      const username = interaction.options.getString('username');
+      const result = await lookupProfile(username);
+      try {
+        await interaction.editReply({
+          ...buildProfilerReply(result),
+          allowedMentions: { parse: [] }
+        });
+      } catch (replyError) {
+        console.error(`Error sending /profiler reply for "${username}":`, replyError);
+        const tooLong = replyError?.code === 50035;
+        await interaction.editReply({
+          content: wrapAnsiBlock([
+            borderLine(TERMINAL_WIDTH),
+            `${A.brightRed}▸ SYSTEM ERROR // UEE NET${A.reset}`,
+            borderLine(TERMINAL_WIDTH),
+            termRowAnsi('STATUS', 'TRANSMISSION FAULT', A.brightRed),
+            termRowAnsi('DETAIL', tooLong ? 'Profile data exceeds Discord message limit' : 'Failed to deliver response to Discord', A.red),
+            termRowAnsi('HINT', 'Try again or use the ORG LOG link on RSI', A.dim),
+            borderLine(TERMINAL_WIDTH),
+            `${A.dim}// TRANSMISSION TERMINATED${A.reset}`
+          ].join('\n')),
+          flags: MessageFlags.SuppressEmbeds
+        }).catch(() => {});
+      }
+      return;
     }
-  })();
 
-  client.once('ready', () => {
-    console.log(`✅ Logged in as ${client.user.tag}`);
-    console.log(`   In Discord, use /find with "${client.user.username}"`);
-  });
-
-  client.on('interactionCreate', async interaction => {
-    if (!interaction.isChatInputCommand()) return;
-
-    console.log(`📩 /${interaction.commandName} from ${interaction.user.tag}`);
-
-    try {
-      if (interaction.commandName === 'find') {
-        await interaction.deferReply();
-
-        const username = interaction.options.getString('username');
-        const result = await lookupProfile(username);
-        try {
-          await interaction.editReply({
-            ...buildProfilerReply(result),
-            allowedMentions: { parse: [] }
-          });
-        } catch (replyError) {
-          console.error(`Error sending /find reply for "${username}":`, replyError);
-          const tooLong = replyError?.code === 50035;
-          await interaction.editReply({
-            content: wrapAnsiBlock([
-              borderLine(TERMINAL_WIDTH),
-              `${A.brightRed}▸ SYSTEM ERROR // UEE NET${A.reset}`,
-              borderLine(TERMINAL_WIDTH),
-              termRowAnsi('STATUS', 'TRANSMISSION FAULT', A.brightRed),
-              termRowAnsi('DETAIL', tooLong ? 'Profile data exceeds Discord message limit' : 'Failed to deliver response to Discord', A.red),
-              termRowAnsi('HINT', 'Try again or use the ORG LOG link on RSI', A.dim),
-              borderLine(TERMINAL_WIDTH),
-              `${A.dim}// TRANSMISSION TERMINATED${A.reset}`
-            ].join('\n')),
-            flags: MessageFlags.SuppressEmbeds
-          }).catch(() => {});
-        }
-        return;
-      }
-
-      if (interaction.commandName === 'ping') {
-        await interaction.reply('`▸ PONG // SIGNAL OK`');
-        return;
-      }
-
-      if (interaction.commandName === 'shutdown') {
-        await interaction.reply('`▸ SHUTDOWN INITIATED // SC_Profiler offline`');
-        process.exit(0);
-      }
-    } catch (error) {
-      console.error(`Error handling /${interaction.commandName}:`, error);
-      const payload = {
-        content: wrapAnsiBlock([
-          borderLine(TERMINAL_WIDTH),
-          `${A.brightRed}▸ SYSTEM ERROR // UEE NET${A.reset}`,
-          borderLine(TERMINAL_WIDTH),
-          termRowAnsi('STATUS', 'INTERNAL FAULT', A.brightRed),
-          termRowAnsi('DETAIL', 'Failed to query RSI registry', A.red),
-          borderLine(TERMINAL_WIDTH),
-          `${A.dim}// TRANSMISSION TERMINATED${A.reset}`
-        ].join('\n')),
-        flags: MessageFlags.SuppressEmbeds
-      };
-
-      if (interaction.deferred || interaction.replied) {
-        await interaction.editReply(payload).catch(() => {});
-      } else {
-        await interaction.reply(payload).catch(() => {});
-      }
+    if (interaction.commandName === 'ping') {
+      await interaction.reply('`▸ PONG // SIGNAL OK`');
+      return;
     }
-  });
 
-  client.login(process.env.BOT_TOKEN);
-}
+    if (interaction.commandName === 'shutdown') {
+      await interaction.reply('`▸ SHUTDOWN INITIATED // SC_Profiler offline`');
+      process.exit(0);
+    }
+  } catch (error) {
+    console.error(`Error handling /${interaction.commandName}:`, error);
+    const payload = {
+      content: wrapAnsiBlock([
+        borderLine(TERMINAL_WIDTH),
+        `${A.brightRed}▸ SYSTEM ERROR // UEE NET${A.reset}`,
+        borderLine(TERMINAL_WIDTH),
+        termRowAnsi('STATUS', 'INTERNAL FAULT', A.brightRed),
+        termRowAnsi('DETAIL', 'Failed to query RSI registry', A.red),
+        borderLine(TERMINAL_WIDTH),
+        `${A.dim}// TRANSMISSION TERMINATED${A.reset}`
+      ].join('\n')),
+      flags: MessageFlags.SuppressEmbeds
+    };
+
+    if (interaction.deferred || interaction.replied) {
+      await interaction.editReply(payload).catch(() => {});
+    } else {
+      await interaction.reply(payload).catch(() => {});
+    }
+  }
+});
+
+client.login(process.env.BOT_TOKEN);
